@@ -26,11 +26,7 @@
   var CART_DEBOUNCE_MS = Number(window.PXL_CART_DEBOUNCE_MS) || 8000;
   var CART_SAME_HASH_TTL_MS = Number(window.PXL_CART_SAME_HASH_TTL_MS) || 10 * 60 * 1000;
   var IDENTITY_TTL_MS = Number(window.PXL_IDENTITY_TTL_MS) || 6 * 60 * 60 * 1000;
-  var VISIT_TTL_MS = Number(window.PXL_VISIT_TTL_MS) || 30 * 60 * 1000;
-  var PRODUCT_VIEW_TTL_MS = Number(window.PXL_PRODUCT_VIEW_TTL_MS) || 6 * 60 * 60 * 1000;
-  var PRODUCT_VIEW_MAX_STORED_KEYS = Number(window.PXL_PRODUCT_VIEW_MAX_STORED_KEYS) || 80;
   var POST_MIN_INTERVAL_MS = Number(window.PXL_POST_MIN_INTERVAL_MS) || 500;
-  var PRODUCT_RECORD_ID = window.PXL_PRODUCT_RECORD_ID || 'rec2319776031';
   var CHECKOUT_RECORD_ID = window.PXL_CHECKOUT_RECORD_ID || 'rec2297224411';
   var FORM_INJECT_MAX_ATTEMPTS = Number(window.PXL_FORM_INJECT_MAX_ATTEMPTS) || 8;
   var FORM_INJECT_INTERVAL_MS = Number(window.PXL_FORM_INJECT_INTERVAL_MS) || 1000;
@@ -38,8 +34,6 @@
   var siteCode = window.PXL_SITE_CODE || 'default';
   var CART_CACHE_KEY = DEVICE_KEY + ':cart_state';
   var IDENTITY_CACHE_KEY = DEVICE_KEY + ':identity_state';
-  var VISIT_CACHE_KEY = DEVICE_KEY + ':visit_state';
-  var PRODUCT_VIEW_CACHE_KEY = DEVICE_KEY + ':product_view_state';
 
   function debugLog() {
     if (!DEBUG || !window.console || !console.log) return;
@@ -85,59 +79,6 @@
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch (e) {}
-  }
-
-  function getMetaContent(selector) {
-    try {
-      var node = document.querySelector(selector);
-      return node ? (node.getAttribute('content') || node.getAttribute('href') || '').trim() : '';
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function getText(selector, root) {
-    try {
-      var scope = root && root.querySelector ? root : document;
-      var node = scope.querySelector(selector);
-      return node ? (node.textContent || node.value || '').replace(/\s+/g, ' ').trim() : '';
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function parsePrice(value) {
-    if (value == null || value === '') return null;
-    var numeric = Number(String(value).replace(/\s+/g, '').replace(',', '.').replace(/[^\d.-]/g, ''));
-    return Number.isFinite(numeric) ? numeric : null;
-  }
-
-  function isProductPageUrl(value) {
-    if (!value) return false;
-    try {
-      return /\/tproduct\//.test(new URL(value, window.location.href).pathname);
-    } catch (e) {
-      return /\/tproduct\//.test(String(value));
-    }
-  }
-
-  function getProductPageUrl() {
-    var urls = [
-      getMetaContent('link[rel="canonical"]'),
-      getMetaContent('meta[property="og:url"]'),
-      window.location.href || ''
-    ];
-
-    for (var i = 0; i < urls.length; i++) {
-      if (!isProductPageUrl(urls[i])) continue;
-      try {
-        return new URL(urls[i], window.location.href).href;
-      } catch (e) {
-        return urls[i];
-      }
-    }
-
-    return '';
   }
 
   function post(path, data) {
@@ -190,29 +131,6 @@
     });
   }
 
-  function normalizeUrlForKey(value) {
-    if (!value) return '';
-    try {
-      var url = new URL(value, window.location.href);
-      url.hash = '';
-      [
-        'utm_source',
-        'utm_medium',
-        'utm_campaign',
-        'utm_content',
-        'utm_term',
-        'fbclid',
-        'yclid',
-        'gclid'
-      ].forEach(function (key) {
-        url.searchParams.delete(key);
-      });
-      return url.href;
-    } catch (e) {
-      return String(value || '').split('#')[0];
-    }
-  }
-
   function generateUid() {
     if (window.crypto && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -243,30 +161,6 @@
   var lastIdentifiedEmail = null;
   var cartTimer = null;
   var nextPostAt = 0;
-
-  function trackVisit(options) {
-    var now = Date.now();
-    var state = readJsonStorage(VISIT_CACHE_KEY) || {};
-
-    if (state.sentAt && now - Number(state.sentAt || 0) < VISIT_TTL_MS && !(options && options.force)) {
-      debugLog('[pxl] skip duplicate visit ping');
-      return Promise.resolve();
-    }
-
-    writeJsonStorage(VISIT_CACHE_KEY, {
-      sentAt: now,
-      path: window.location.pathname || '/'
-    });
-
-    return post('/visit', {
-      deviceUid: deviceUid,
-      site_code: siteCode,
-      path: window.location.pathname || '/',
-      url: window.location.href || '',
-      referrer: document.referrer || '',
-      title: document.title || ''
-    });
-  }
 
   function injectTrackingMetaIntoCart() {
     var MAX_ATTEMPTS = FORM_INJECT_MAX_ATTEMPTS;
@@ -366,199 +260,6 @@
     }
 
     tryAttach();
-  }
-
-  function trackProductView(product) {
-    var payload = {
-      deviceUid: deviceUid,
-      site_code: siteCode,
-      product: product || {}
-    };
-    debugLog('[pxl] trackProductView', payload);
-    return post('/product/view', payload);
-  }
-
-  function getImageUrlFromNode(node) {
-    if (!node) return '';
-
-    var url =
-      node.getAttribute('data-original') ||
-      node.getAttribute('data-img-zoom-url') ||
-      node.getAttribute('content') ||
-      node.getAttribute('src') ||
-      node.getAttribute('data-src') ||
-      '';
-
-    if (url) return url.trim();
-
-    var backgroundImage = '';
-    try {
-      backgroundImage = (node.style && node.style.backgroundImage) || window.getComputedStyle(node).backgroundImage || '';
-    } catch (e) {}
-
-    var match = backgroundImage.match(/url\((['"]?)(.*?)\1\)/);
-    return match && match[2] ? match[2].trim() : '';
-  }
-
-  function getProductImageFromDom(root) {
-    var scope = root && root.querySelector ? root : document;
-    var selectors = [
-      '.t-slds__item_active .js-product-img',
-      '.t-slds__item_active .t-slds__bgimg[data-original]',
-      '.t-slds__item_active [itemprop="image"][content]',
-      '.t-store__prod-popup__slider .js-product-img',
-      '.t-store__prod-popup__gallery .js-product-img',
-      '.t-slds__bgimg[data-original]',
-      '.t-slds__imgwrapper[data-img-zoom-url]',
-      '.t-store__prod-popup__slider img[src]',
-      '.t-store__prod-popup__gallery img[src]',
-      '.t-store__prod-popup__img[src]',
-      '.js-product-img[data-original]',
-      '.js-product-img[src]',
-      '[itemprop="image"][content]',
-      '[itemprop="image"][src]'
-    ];
-
-    for (var i = 0; i < selectors.length; i++) {
-      try {
-        var node = scope.querySelector(selectors[i]);
-        if (!node) continue;
-        var url = getImageUrlFromNode(node);
-        if (url) return url.trim();
-      } catch (e) {}
-    }
-
-    return '';
-  }
-
-  function getProductPriceFromDom(root) {
-    var scope = root && root.querySelector ? root : document;
-    var selectors = [
-      '.js-product-price',
-      '.js-store-prod-price-val',
-      '.t-store__prod-popup__price-value',
-      '[itemprop="price"][content]',
-      '[itemprop="lowPrice"][content]'
-    ];
-
-    for (var i = 0; i < selectors.length; i++) {
-      try {
-        var node = scope.querySelector(selectors[i]);
-        if (!node) continue;
-        var value =
-          node.getAttribute('data-product-price-def') ||
-          node.getAttribute('content') ||
-          node.textContent ||
-          '';
-        var price = parsePrice(value);
-        if (price != null) return price;
-      } catch (e) {}
-    }
-
-    return null;
-  }
-
-  function isLikelyProductPage() {
-    return !!getProductPageUrl();
-  }
-
-  function getProductRoot() {
-    try {
-      var record = document.getElementById(PRODUCT_RECORD_ID);
-      if (record) {
-        return record.querySelector('.t-store__product-snippet, .t-store__product-popup, .js-product') || record;
-      }
-    } catch (e) {}
-
-    try {
-      return document.querySelector('.t-store__product-snippet, .t-store__product-popup, .js-product');
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function detectProductFromPage() {
-    if (!isLikelyProductPage()) return null;
-
-    var productRoot = getProductRoot();
-
-    var name =
-      getText('.js-store-prod-name', productRoot) ||
-      getText('.js-product-name', productRoot) ||
-      getText('[itemprop="name"]', productRoot) ||
-      getMetaContent('meta[property="og:title"]') ||
-      (document.title || '').replace(/\s+/g, ' ').trim();
-    var url = getProductPageUrl();
-    var img = getProductImageFromDom(productRoot) || getMetaContent('meta[property="og:image"]') || getMetaContent('meta[name="twitter:image"]');
-    var price = getProductPriceFromDom(productRoot);
-
-    if (!name || !url) return null;
-
-    return {
-      name: name,
-      price: price,
-      url: url,
-      img: img || null
-    };
-  }
-
-  function shouldSendProductView(product) {
-    var now = Date.now();
-    var key = normalizeUrlForKey(product.url) || [product.name || '', product.price || ''].join('|');
-    var state = readJsonStorage(PRODUCT_VIEW_CACHE_KEY) || {};
-    var sent = state.sent || {};
-
-    Object.keys(sent).forEach(function (storedKey) {
-      if (now - Number(sent[storedKey] || 0) > PRODUCT_VIEW_TTL_MS) {
-        delete sent[storedKey];
-      }
-    });
-
-    if (sent[key] && now - Number(sent[key] || 0) < PRODUCT_VIEW_TTL_MS) {
-      debugLog('[pxl] skip duplicate product view');
-      return false;
-    }
-
-    sent[key] = now;
-
-    var keys = Object.keys(sent).sort(function (a, b) {
-      return Number(sent[b] || 0) - Number(sent[a] || 0);
-    });
-
-    if (keys.length > PRODUCT_VIEW_MAX_STORED_KEYS) {
-      keys.slice(PRODUCT_VIEW_MAX_STORED_KEYS).forEach(function (oldKey) {
-        delete sent[oldKey];
-      });
-    }
-
-    writeJsonStorage(PRODUCT_VIEW_CACHE_KEY, {
-      sent: sent,
-      lastKey: key,
-      sentAt: now
-    });
-
-    return true;
-  }
-
-  function trackProductPageView(options) {
-    var product = detectProductFromPage();
-    if (product && !product.img && !(options && options.allowWithoutImage)) {
-      debugLog('[pxl] product view waits for image');
-      return Promise.resolve();
-    }
-    if (!product || !shouldSendProductView(product)) return Promise.resolve();
-    return trackProductView(product);
-  }
-
-  function initProductViewTracking() {
-    setTimeout(trackProductPageView, 1200);
-    setTimeout(function () {
-      trackProductPageView({ allowWithoutImage: true });
-    }, 3500);
-
-    document.addEventListener('tStoreRendered', function () {
-      setTimeout(trackProductPageView, 300);
-    }, true);
   }
 
   function cartHash(items) {
@@ -867,16 +568,6 @@
           injectTrackingMetaIntoCart();
           break;
 
-        case 'trackProductView':
-          if (payload && shouldSendProductView(payload)) {
-            trackProductView(payload);
-          }
-          break;
-
-        case 'trackVisit':
-          trackVisit({ force: true });
-          break;
-
         case 'trackCart':
           trackCart(payload || []);
           break;
@@ -905,11 +596,9 @@
 
   function initPxl() {
     debugLog('[pxl] init site_code =', siteCode);
-    trackVisit();
     injectTrackingMetaIntoCart();
     initCartButtonsTracking();
     initEmailTracking();
-    initProductViewTracking();
 
     setTimeout(function () {
       if (!window.tcart) return;
